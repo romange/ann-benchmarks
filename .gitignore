@@ -2,7 +2,7 @@
 *.pyc
 *.o
 protocol/c/fr-*
-
+results/*
 install/*.txt
 install/*.yaml
 install/lib-*/
@@ -10,9 +10,8 @@ data/*
 *.class
 
 *.log
+*.html
 
-results/*
-!results/*.png
 
 venv
 

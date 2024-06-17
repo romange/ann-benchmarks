@@ -41,9 +41,9 @@ if __name__ == "__main__":
          --rm -t ann-benchmarks -f ann_benchmarks/algorithms/base/Dockerfile .",
          shell=True,
      )
-    
+
     if args.algorithm:
-        tags = [args.algorithm]
+        tags = [s.strip() for s in args.algorithm.split(",")]
     elif os.getenv("LIBRARY"):
         tags = [os.getenv("LIBRARY")]
     else:

@@ -71,8 +71,8 @@ def run_worker(cpu: int, args: argparse.Namespace, queue: multiprocessing.Queue)
         else:
             memory_margin = 500e6  # reserve some extra memory for misc stuff
             mem_limit = int((psutil.virtual_memory().available - memory_margin) / args.parallelism)
-            cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
-            
+            cpu_limit = "0-4" # str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
+            print(f"cpu_limit is {cpu_limit}")
             run_docker(definition, args.dataset, args.count, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
 
 
@@ -316,7 +316,7 @@ def main():
         base_dir=args.definitions,
     )
     random.shuffle(definitions)
-
+    print(args)
     definitions = filter_already_run_definitions(definitions, 
         dataset=args.dataset, 
         count=args.count, 

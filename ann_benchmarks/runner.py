@@ -328,7 +328,8 @@ def run_docker(
             os.path.abspath("data"): {"bind": "/home/app/data", "mode": "ro"},
             os.path.abspath("results"): {"bind": "/home/app/results", "mode": "rw"},
         },
-        network_mode="host",
+        # network_mode="host",
+        
         cpuset_cpus=cpu_limit,
         mem_limit=mem_limit,
         detach=True,

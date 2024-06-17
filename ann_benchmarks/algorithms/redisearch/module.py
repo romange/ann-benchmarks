@@ -58,6 +58,8 @@ class Redisearch(BaseANN):
             p.execute_command("HSET", i, self.field_name, v.tobytes())
             if i % 1000 == 999:
                 p.execute()
+                if i % 100000 == 199999:
+                    print(f"Added {i} arguments")
                 p.reset()
         p.execute()
 
