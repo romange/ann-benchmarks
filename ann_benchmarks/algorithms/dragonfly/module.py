@@ -7,19 +7,20 @@ from redis import Redis
 from ..base.module import BaseANN
 
 
-class Redisearch(BaseANN):
+class Dragonfly(BaseANN):
     def __init__(self, metric, M):
         self.metric = metric
         self.ef_construction = 500
         self.M = M
         self.index_name = "ann"
         self.field_name = "vector"
+        self.threads = 4
 
     def fit(self, X):
         print("Running in local mode")
 
-        # Connect to Redis
-        print("Connecting to Redis...")
+        # Connect to Dragonfly
+        print("Connecting to Dragonfly...")
         self.redis = Redis(host="localhost", port=6379, decode_responses=False)
 
         try:
@@ -27,7 +28,6 @@ class Redisearch(BaseANN):
         except Exception:
           pass
         self.redis.execute_command("FLUSHALL")
-
 
         # Create index
         args = [
@@ -43,7 +43,7 @@ class Redisearch(BaseANN):
             "DIM",
             X.shape[1],
             "DISTANCE_METRIC",
-            {"angular": "cosine", "euclidean": "l2"}[self.metric],
+            {"angular": "COSINE", "euclidean": "L2"}[self.metric],
             "M",
             self.M,
             "EF_CONSTRUCTION",
@@ -64,7 +64,7 @@ class Redisearch(BaseANN):
         p.execute()
 
     def set_query_arguments(self, ef):
-        self.ef = ef
+        self.ef = ef // self.threads
 
     def query(self, v, n):
         q = [
@@ -81,10 +81,8 @@ class Redisearch(BaseANN):
             "2",
             "BLOB",
             v.tobytes(),
-            "DIALECT",
-            "2",
         ]
         return [int(doc) for doc in self.redis.execute_command(*q, target_nodes="random")[1:]]
 
     def __str__(self):
-        return f"Redisearch(M={self.M}, ef={self.ef})"
+        return f"Dragonfly(M={self.M}, ef={self.ef}, thread={self.threads})"

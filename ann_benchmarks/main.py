@@ -316,17 +316,21 @@ def main():
         base_dir=args.definitions,
     )
     random.shuffle(definitions)
-    print(args)
-    definitions = filter_already_run_definitions(definitions, 
-        dataset=args.dataset, 
-        count=args.count, 
-        batch=args.batch, 
-        force=args.force,
-    )
+
+    #definitions = filter_already_run_definitions(definitions, 
+    #    dataset=args.dataset, 
+    #    count=args.count, 
+    #    batch=args.batch, 
+    #    force=args.force,
+    #)
+
+    # print("Primary definitions", definitions)
 
     if args.algorithm:
         logger.info(f"running only {args.algorithm}")
         definitions = [d for d in definitions if d.algorithm == args.algorithm]
+
+    print("Filtered definitions", definitions)
 
     if not args.local:
         definitions = filter_by_available_docker_images(definitions)
