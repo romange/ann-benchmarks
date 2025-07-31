@@ -25,7 +25,7 @@ class Dragonfly(BaseANN):
 
         # Connect to Dragonfly on host machine
         print("Connecting to Dragonfly on host machine...")
-        self.redis = Redis(host="192.168.0.126", port=6379, decode_responses=False)
+        self.redis = Redis(host="localhost", port=6379, decode_responses=False)
 
         try:
           self.redis.execute_command("FT.DROPINDEX", self.index_name)
