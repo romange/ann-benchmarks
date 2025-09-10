@@ -23,8 +23,8 @@ class Dragonfly(BaseANN):
         # Convert to float32 if needed
         X = X.astype(numpy.float32)
 
-        # Connect to Dragonfly
-        print("Connecting to Dragonfly...")
+        # Connect to Dragonfly on host machine
+        print("Connecting to Dragonfly on host machine...")
         self.redis = Redis(host="localhost", port=6379, decode_responses=False)
 
         try:

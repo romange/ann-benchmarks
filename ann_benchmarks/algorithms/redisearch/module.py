@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import time
+import numpy
 
 from redis import Redis
 
@@ -17,6 +18,9 @@ class Redisearch(BaseANN):
 
     def fit(self, X):
         print("Running in local mode")
+
+        # Convert to float32 if needed
+        X = X.astype(numpy.float32)
 
         # Connect to Redis
         print("Connecting to Redis...")
@@ -67,6 +71,8 @@ class Redisearch(BaseANN):
         self.ef = ef
 
     def query(self, v, n):
+        # Convert to float32 to match the index
+        v = v.astype(numpy.float32)
         q = [
             "FT.SEARCH",
             self.index_name,
