@@ -1,6 +1,9 @@
 import subprocess
 import sys
 import time
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy
 
 from redis import Redis
@@ -15,7 +18,17 @@ class Dragonfly(BaseANN):
         self.M = M
         self.index_name = "ann"
         self.field_name = "vector"
-        self.threads = 4
+        self.threads = 4  # server-side logical threads parameter used in set_query_arguments
+
+        # Search concurrency and timeouts (can be overridden via env vars)
+        # These govern client-side parallelism and socket behavior.
+        self.search_threads = int(os.getenv("DF_SEARCH_THREADS", str(max(4, (os.cpu_count() or 4)))))
+        self.search_read_timeout = float(os.getenv("DF_SEARCH_TIMEOUT", "15.0"))
+        self.connect_timeout = float(os.getenv("DF_CONNECT_TIMEOUT", "10.0"))
+
+        # Internal holders for batch results/latencies
+        self._batch_results = None
+        self._batch_latencies = None
 
     def fit(self, X):
         print("Running in local mode")
@@ -87,8 +100,134 @@ class Dragonfly(BaseANN):
             "2",
             "BLOB",
             v.tobytes(),
+            "DIALECT",
+            "2",
         ]
-        return [int(doc) for doc in self.redis.execute_command(*q, target_nodes="random")[1:]]
+        resp = self.redis.execute_command(*q, target_nodes="random")
+
+        # Robustly extract document IDs from RediSearch response
+        ids = []
+        if isinstance(resp, (list, tuple)) and len(resp) > 1:
+            for item in resp[1:]:
+                if isinstance(item, (bytes, str)):
+                    try:
+                        ids.append(int(item))
+                    except Exception:
+                        continue
+                elif isinstance(item, (list, tuple)) and len(item) > 0:
+                    doc_id = item[0]
+                    if isinstance(doc_id, (bytes, str)):
+                        try:
+                            ids.append(int(doc_id))
+                        except Exception:
+                            continue
+        return ids
+
+    def batch_query(self, X, n):
+        """Run many queries concurrently using a thread pool.
+
+        Each thread holds its own Redis client bound to a single dedicated TCP connection.
+        This enables true I/O parallelism across many sockets.
+        """
+        total = len(X)
+        self._batch_results = [None] * total
+        self._batch_latencies = [0.0] * total
+
+        tls = threading.local()
+
+        def get_client() -> Redis:
+            # Lazily create one Redis client per OS thread.
+            cli = getattr(tls, "cli", None)
+            if cli is None:
+                cli = Redis(
+                    host="localhost",
+                    port=6379,
+                    decode_responses=False,
+                    socket_timeout=self.search_read_timeout,
+                    socket_connect_timeout=self.connect_timeout,
+                    socket_keepalive=True,
+                    health_check_interval=30,
+                    retry_on_timeout=True,
+                )
+                # warm up connection
+                try:
+                    cli.ping()
+                except Exception:
+                    pass
+                tls.cli = cli
+            return cli
+
+        def run_one(idx: int):
+            v = X[idx].astype(numpy.float32)
+            q = [
+                "FT.SEARCH",
+                self.index_name,
+                f"*=>[KNN {n} @{self.field_name} $BLOB EF_RUNTIME {self.ef}]",
+                "NOCONTENT",
+                "SORTBY",
+                "__vector_score",
+                "LIMIT",
+                "0",
+                str(n),
+                "PARAMS",
+                "2",
+                "BLOB",
+                v.tobytes(),
+                "DIALECT",
+                "2",
+            ]
+            cli = get_client()
+            t0 = time.time()
+            try:
+                resp = cli.execute_command(*q, target_nodes="random")
+                # Robust parsing of RediSearch response to extract doc IDs
+                res = []
+                if isinstance(resp, (list, tuple)) and len(resp) > 1:
+                    for item in resp[1:]:
+                        if isinstance(item, (bytes, str)):
+                            try:
+                                res.append(int(item))
+                            except Exception:
+                                continue
+                        elif isinstance(item, (list, tuple)) and len(item) > 0:
+                            doc_id = item[0]
+                            if isinstance(doc_id, (bytes, str)):
+                                try:
+                                    res.append(int(doc_id))
+                                except Exception:
+                                    continue
+            except Exception:
+                res = []
+            finally:
+                self._batch_results[idx] = res
+                self._batch_latencies[idx] = max(0.0, time.time() - t0)
+
+        with ThreadPoolExecutor(max_workers=self.search_threads) as ex:
+            futures = [ex.submit(run_one, i) for i in range(total)]
+            for _ in as_completed(futures):
+                pass
+
+        # Close per-thread clients
+        # Note: we cannot iterate tls for all threads; rely on GC/socket timeouts after pool shutdown.
+        # To be explicit, create a finalizer thread to close if present in this main thread (no-op for workers).
+        try:
+            cli = getattr(tls, "cli", None)
+            if cli is not None:
+                cli.close()
+        except Exception:
+            pass
+
+    def get_batch_results(self):
+        return self._batch_results
+
+    def get_batch_latencies(self):
+        return self._batch_latencies
+
+    def done(self) -> None:
+        try:
+            self.redis.close()
+        except Exception:
+            pass
 
     def __str__(self):
-        return f"Dragonfly(M={self.M}, ef={self.ef}, thread={self.threads})"
+        return f"Dragonfly(M={self.M}, ef={self.ef}, thread={self.threads}, search_threads={self.search_threads})"
