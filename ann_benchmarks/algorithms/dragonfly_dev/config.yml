@@ -3,11 +3,11 @@ float:
   - base_args: ['@metric']
     constructor: Dragonfly
     disabled: false
-    docker_tag: ann-benchmarks-dragonfly-dev
-    module: ann_benchmarks.algorithms.dragonfly-dev
-    name: dragonfly-dev
+    docker_tag: ann-benchmarks-dragonfly_dev
+    module: ann_benchmarks.algorithms.dragonfly_dev
+    name: dragonfly_dev
     run_groups:
-      dragonfly-dev:
+      dragonfly_dev:
         arg_groups: [[4, 8, 12, 16, 24, 36, 48, 64, 96]]
         args: {}
         query_args: [[10, 20, 40, 80, 120, 200, 400, 600, 800]]
