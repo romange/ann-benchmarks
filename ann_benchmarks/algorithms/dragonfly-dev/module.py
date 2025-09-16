@@ -26,6 +26,14 @@ class Dragonfly(BaseANN):
         self.search_read_timeout = float(os.getenv("DF_SEARCH_TIMEOUT", "15.0"))
         self.connect_timeout = float(os.getenv("DF_CONNECT_TIMEOUT", "10.0"))
 
+        # Redis/Dragonfly endpoint configuration via environment variables
+        # Defaults: host=localhost, port=6379
+        self.host = os.getenv("DF_HOST", "localhost")
+        try:
+            self.port = int(os.getenv("DF_PORT", "6379"))
+        except Exception:
+            self.port = 6379
+
         # Internal holders for batch results/latencies
         self._batch_results = None
         self._batch_latencies = None
@@ -36,9 +44,9 @@ class Dragonfly(BaseANN):
         # Convert to float32 if needed
         X = X.astype(numpy.float32)
 
-        # Connect to Dragonfly on host machine
-        print("Connecting to Dragonfly on host machine...")
-        self.redis = Redis(host="localhost", port=6379, decode_responses=False)
+        # Connect to Dragonfly endpoint
+        print(f"Connecting to Dragonfly at {self.host}:{self.port} ...")
+        self.redis = Redis(host=self.host, port=self.port, decode_responses=False)
 
         try:
           self.redis.execute_command("FT.DROPINDEX", self.index_name)
@@ -140,8 +148,8 @@ class Dragonfly(BaseANN):
             cli = getattr(tls, "cli", None)
             if cli is None:
                 cli = Redis(
-                    host="localhost",
-                    port=6379,
+                    host=self.host,
+                    port=self.port,
                     decode_responses=False,
                     socket_timeout=self.search_read_timeout,
                     socket_connect_timeout=self.connect_timeout,
