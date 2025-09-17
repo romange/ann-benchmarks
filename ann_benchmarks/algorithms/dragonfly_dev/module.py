@@ -2,8 +2,6 @@ import subprocess
 import sys
 import time
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy
 
 from redis import Redis
@@ -20,9 +18,7 @@ class Dragonfly(BaseANN):
         self.field_name = "vector"
         self.threads = 4  # server-side logical threads parameter used in set_query_arguments
 
-        # Search concurrency and timeouts (can be overridden via env vars)
-        # These govern client-side parallelism and socket behavior.
-        self.search_threads = int(os.getenv("DF_SEARCH_THREADS", str(max(4, (os.cpu_count() or 4)))))
+        # Connection timeouts for Redis client
         self.search_read_timeout = float(os.getenv("DF_SEARCH_TIMEOUT", "15.0"))
         self.connect_timeout = float(os.getenv("DF_CONNECT_TIMEOUT", "10.0"))
 
@@ -46,7 +42,13 @@ class Dragonfly(BaseANN):
 
         # Connect to Dragonfly endpoint
         print(f"Connecting to Dragonfly at {self.host}:{self.port} ...")
-        self.redis = Redis(host=self.host, port=self.port, decode_responses=False)
+        self.redis = Redis(
+            host=self.host,
+            port=self.port,
+            decode_responses=False,
+            socket_timeout=self.search_read_timeout,
+            socket_connect_timeout=self.connect_timeout
+        )
 
         try:
           self.redis.execute_command("FT.DROPINDEX", self.index_name)
@@ -113,60 +115,25 @@ class Dragonfly(BaseANN):
         ]
         resp = self.redis.execute_command(*q, target_nodes="random")
 
-        # Robustly extract document IDs from RediSearch response
-        ids = []
-        if isinstance(resp, (list, tuple)) and len(resp) > 1:
-            for item in resp[1:]:
-                if isinstance(item, (bytes, str)):
-                    try:
-                        ids.append(int(item))
-                    except Exception:
-                        continue
-                elif isinstance(item, (list, tuple)) and len(item) > 0:
-                    doc_id = item[0]
-                    if isinstance(doc_id, (bytes, str)):
-                        try:
-                            ids.append(int(doc_id))
-                        except Exception:
-                            continue
-        return ids
+        # Extract document IDs from RediSearch response
+        return [int(resp[i]) for i in range(1, len(resp), 2)] if len(resp) > 1 else []
 
     def batch_query(self, X, n):
-        """Run many queries concurrently using a thread pool.
+        """Run many queries using Redis pipelining for optimal performance.
 
-        Each thread holds its own Redis client bound to a single dedicated TCP connection.
-        This enables true I/O parallelism across many sockets.
+        Uses Dragonfly's native batch processing capabilities via Redis pipeline
+        instead of client-side threading to reduce network overhead and improve throughput.
         """
         total = len(X)
         self._batch_results = [None] * total
         self._batch_latencies = [0.0] * total
 
-        tls = threading.local()
+        # Create pipeline for batch execution
+        pipeline = self.redis.pipeline(transaction=False)
 
-        def get_client() -> Redis:
-            # Lazily create one Redis client per OS thread.
-            cli = getattr(tls, "cli", None)
-            if cli is None:
-                cli = Redis(
-                    host=self.host,
-                    port=self.port,
-                    decode_responses=False,
-                    socket_timeout=self.search_read_timeout,
-                    socket_connect_timeout=self.connect_timeout,
-                    socket_keepalive=True,
-                    health_check_interval=30,
-                    retry_on_timeout=True,
-                )
-                # warm up connection
-                try:
-                    cli.ping()
-                except Exception:
-                    pass
-                tls.cli = cli
-            return cli
-
-        def run_one(idx: int):
-            v = X[idx].astype(numpy.float32)
+        # Add all queries to the pipeline
+        for i, v in enumerate(X):
+            v = v.astype(numpy.float32)
             q = [
                 "FT.SEARCH",
                 self.index_name,
@@ -184,46 +151,31 @@ class Dragonfly(BaseANN):
                 "DIALECT",
                 "2",
             ]
-            cli = get_client()
-            t0 = time.time()
-            try:
-                resp = cli.execute_command(*q, target_nodes="random")
-                # Robust parsing of RediSearch response to extract doc IDs
-                res = []
-                if isinstance(resp, (list, tuple)) and len(resp) > 1:
-                    for item in resp[1:]:
-                        if isinstance(item, (bytes, str)):
-                            try:
-                                res.append(int(item))
-                            except Exception:
-                                continue
-                        elif isinstance(item, (list, tuple)) and len(item) > 0:
-                            doc_id = item[0]
-                            if isinstance(doc_id, (bytes, str)):
-                                try:
-                                    res.append(int(doc_id))
-                                except Exception:
-                                    continue
-            except Exception:
-                res = []
-            finally:
-                self._batch_results[idx] = res
-                self._batch_latencies[idx] = max(0.0, time.time() - t0)
+            pipeline.execute_command(*q, target_nodes="random")
 
-        with ThreadPoolExecutor(max_workers=self.search_threads) as ex:
-            futures = [ex.submit(run_one, i) for i in range(total)]
-            for _ in as_completed(futures):
-                pass
-
-        # Close per-thread clients
-        # Note: we cannot iterate tls for all threads; rely on GC/socket timeouts after pool shutdown.
-        # To be explicit, create a finalizer thread to close if present in this main thread (no-op for workers).
+        # Execute all queries as a batch and measure total time
+        start_time = time.time()
         try:
-            cli = getattr(tls, "cli", None)
-            if cli is not None:
-                cli.close()
-        except Exception:
-            pass
+            responses = pipeline.execute()
+            total_time = time.time() - start_time
+
+            # Process responses and calculate per-query latencies
+            # Since pipeline executes all commands together, we approximate individual latencies
+            avg_latency = total_time / len(responses) if responses else 0.0
+
+            for i, resp in enumerate(responses):
+                # Extract document IDs from RediSearch response
+                res = [int(resp[j]) for j in range(1, len(resp), 2)] if len(resp) > 1 else []
+
+                self._batch_results[i] = res
+                self._batch_latencies[i] = avg_latency
+
+        except Exception as e:
+            # Handle pipeline execution errors
+            print(f"Pipeline execution failed: {e}")
+            for i in range(total):
+                self._batch_results[i] = []
+                self._batch_latencies[i] = 0.0
 
     def get_batch_results(self):
         return self._batch_results
@@ -238,4 +190,4 @@ class Dragonfly(BaseANN):
             pass
 
     def __str__(self):
-        return f"Dragonfly(M={self.M}, ef={self.ef}, thread={self.threads}, search_threads={self.search_threads})"
+        return f"Dragonfly(M={self.M}, ef={self.ef}, threads={self.threads})"
