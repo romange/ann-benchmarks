@@ -17,8 +17,7 @@ class Dragonfly(BaseANN):
         self.M = M
         self.index_name = "ann"
         self.field_name = "vector"
-        self.threads = 4  # server-side logical threads parameter used in set_query_arguments
-
+        
         # Search concurrency and timeouts (can be overridden via env vars)
         # These govern client-side parallelism and socket behavior.
         self.search_threads = int(os.getenv("DF_SEARCH_THREADS", str(max(4, (os.cpu_count() or 4)))))
@@ -94,7 +93,7 @@ class Dragonfly(BaseANN):
         p.execute()
 
     def set_query_arguments(self, ef):
-        self.ef = ef // self.threads
+        self.ef = ef
 
     def query(self, v, n):
         # Convert to float32 to match the index
@@ -163,7 +162,6 @@ class Dragonfly(BaseANN):
             cli = get_client()
             start_idx = chunk_idx * chunk_size
 
-
             # Process data in pipeline-sized batches
             for batch_start in range(0, len(chunk_data), self.pipeline_size):
                 batch_end = min(batch_start + self.pipeline_size, len(chunk_data))
@@ -196,7 +194,7 @@ class Dragonfly(BaseANN):
                 # Execute pipeline batch
                 try:
                     responses = pipeline.execute()
-
+                    
                     # Process responses for this batch
                     for i, resp in enumerate(responses):
                         global_idx = start_idx + batch_start + i
@@ -235,4 +233,4 @@ class Dragonfly(BaseANN):
             pass
 
     def __str__(self):
-        return f"Dragonfly(M={self.M}, ef={self.ef}, threads={self.threads}, search_threads={self.search_threads})"
+        return f"Dragonfly(M={self.M}, ef={self.ef}, search_threads={self.search_threads})"
