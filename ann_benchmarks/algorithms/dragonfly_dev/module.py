@@ -1,6 +1,5 @@
 import subprocess
 import sys
-import time
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,9 +34,8 @@ class Dragonfly(BaseANN):
         except Exception:
             self.port = 6379
 
-        # Internal holders for batch results/latencies
+        # Internal holder for batch results
         self._batch_results = None
-        self._batch_latencies = None
 
     def fit(self, X):
         print("Running in local mode")
@@ -131,13 +129,11 @@ class Dragonfly(BaseANN):
         """
         total = len(X)
         self._batch_results = [None] * total
-        self._batch_latencies = [0.0] * total
 
         # Split work among threads
         chunk_size = max(1, total // self.search_threads)
         chunks = [X[i:i + chunk_size] for i in range(0, total, chunk_size)]
 
-        print(f"batch_query: {total} queries, {len(chunks)} threads, ~{chunk_size} queries per pipeline")
 
         tls = threading.local()
 
@@ -167,7 +163,6 @@ class Dragonfly(BaseANN):
             cli = get_client()
             start_idx = chunk_idx * chunk_size
 
-            print(f"Thread {chunk_idx}: processing {len(chunk_data)} queries with pipeline_size={self.pipeline_size}")
 
             # Process data in pipeline-sized batches
             for batch_start in range(0, len(chunk_data), self.pipeline_size):
@@ -198,14 +193,9 @@ class Dragonfly(BaseANN):
                     ]
                     pipeline.execute_command(*q, target_nodes="random")
 
-                # Execute pipeline batch and measure time
-                start_time = time.time()
+                # Execute pipeline batch
                 try:
                     responses = pipeline.execute()
-                    total_time = time.time() - start_time
-                    avg_latency = total_time / len(responses) if responses else 0.0
-
-                    print(f"Thread {chunk_idx}: pipeline batch executed {len(responses)} queries in {total_time:.3f}s")
 
                     # Process responses for this batch
                     for i, resp in enumerate(responses):
@@ -214,15 +204,12 @@ class Dragonfly(BaseANN):
                             # Extract document IDs from RediSearch response
                             res = [int(resp[j]) for j in range(1, len(resp), 2)] if len(resp) > 1 else []
                             self._batch_results[global_idx] = res
-                            self._batch_latencies[global_idx] = avg_latency
 
-                except Exception as e:
-                    print(f"Pipeline batch execution failed for chunk {chunk_idx}, batch {batch_start}: {e}")
+                except Exception:
                     for i in range(len(batch)):
                         global_idx = start_idx + batch_start + i
                         if global_idx < total:
                             self._batch_results[global_idx] = []
-                            self._batch_latencies[global_idx] = 0.0
 
         # Execute chunks in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=self.search_threads) as ex:
@@ -240,9 +227,6 @@ class Dragonfly(BaseANN):
 
     def get_batch_results(self):
         return self._batch_results
-
-    def get_batch_latencies(self):
-        return self._batch_latencies
 
     def done(self) -> None:
         try:
